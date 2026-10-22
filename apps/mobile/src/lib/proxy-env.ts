@@ -1,0 +1,94 @@
+import type { env, envProfileMap } from "@follow/shared/env.rn"
+import { getEnvProfiles__dangerously } from "@follow/shared/env.rn"
+import type { JotaiSyncStorage } from "@follow/utils"
+import { createAtomHooks } from "@follow/utils"
+import { atomWithStorage } from "jotai/utils"
+
+import { cookieKey } from "./auth"
+import { getE2EEnvProfile } from "./e2e-config"
+import { JotaiPersistSyncStorage } from "./jotai"
+import { reloadApp } from "./reload-app"
+import { safeSecureStore } from "./secure-store"
+
+const getForcedEnvProfile = (): keyof typeof envProfileMap | null => {
+  const profile = getE2EEnvProfile()
+  if (!profile) {
+    return null
+  }
+
+  const envProfiles = getEnvProfiles__dangerously()
+  return profile in envProfiles ? (profile as keyof typeof envProfileMap) : null
+}
+
+const [, , useStoredEnvProfile, , getStoredEnvProfile, _setEnvProfile] = createAtomHooks(
+  atomWithStorage(
+    "##Follow-Current-Env-Profile",
+    __DEV__ ? "dev" : "prod",
+    JotaiPersistSyncStorage as JotaiSyncStorage<string>,
+    {
+      getOnInit: true,
+    },
+  ),
+)
+
+const getEnvProfile = () =>
+  getForcedEnvProfile() ?? (getStoredEnvProfile() as keyof typeof envProfileMap)
+
+const useEnvProfile = () => {
+  const storedProfile = useStoredEnvProfile() as keyof typeof envProfileMap
+  return getForcedEnvProfile() ?? storedProfile
+}
+
+export const proxyEnv = new Proxy(
+  {},
+  {
+    get(target, prop) {
+      if (prop === "FEYFEEDS_API_URL") {
+        const profile = getEnvProfile() as keyof typeof envProfileMap
+        const envProfiles = getEnvProfiles__dangerously()
+        const envMap = envProfiles[profile]
+        const val = envMap?.FEYFEEDS_API_URL
+        if (!val || val.includes("localhost") || val.includes("127.0.0.1")) {
+          return "https://feyfeeds-api.feyfeeds.workers.dev"
+        }
+        return val
+      }
+
+      if (prop === "FOLO_LEGACY_API_URL") {
+        const profile = getEnvProfile() as keyof typeof envProfileMap
+        const envProfiles = getEnvProfiles__dangerously()
+        const envMap = envProfiles[profile]
+        const val = envMap?.FOLO_LEGACY_API_URL
+        if (!val || val.includes("localhost") || val.includes("127.0.0.1")) {
+          return "https://api.folo.is"
+        }
+        return val
+      }
+
+      const profile = getEnvProfile() as keyof typeof envProfileMap
+      const envProfiles = getEnvProfiles__dangerously()
+      const envMap = envProfiles[profile]
+
+      return envMap[prop as keyof typeof envMap]
+    },
+  },
+) as any as typeof env
+
+export const setEnvProfile = (profile: keyof typeof envProfileMap) => {
+  if (getForcedEnvProfile()) return
+
+  const currentProfile = getEnvProfile()
+  if (currentProfile === profile) return
+  _setEnvProfile(profile)
+  try {
+    const input = safeSecureStore.getItem(`${cookieKey}_${profile}`)
+    if (input) {
+      safeSecureStore.setItem(cookieKey, input)
+    }
+  } catch (e) {
+    console.warn("SecureStore access failed during env profile switch:", e)
+  }
+
+  void reloadApp("Switch env profile")
+}
+export { getEnvProfile, useEnvProfile }

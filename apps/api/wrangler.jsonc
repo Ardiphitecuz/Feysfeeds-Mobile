@@ -1,0 +1,23 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "feyfeeds-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-28",
+  "workers_dev": true,
+  "triggers": {
+    "crons": ["* * * * *"],
+  },
+  "observability": {
+    "logs": {
+      "enabled": true,
+    },
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "feyfeeds",
+      "database_id": "d06eb82b-4352-48f0-81f7-d684d7c90320",
+      "migrations_dir": "migrations",
+    },
+  ],
+}

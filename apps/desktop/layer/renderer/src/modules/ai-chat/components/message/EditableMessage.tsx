@@ -1,0 +1,186 @@
+import { Kbd } from "@follow/components/ui/kbd/Kbd.js"
+import type { LexicalRichEditorRef } from "@follow/components/ui/lexical-rich-editor/index.js"
+import { LexicalRichEditor } from "@follow/components/ui/lexical-rich-editor/index.js"
+import { ScrollArea } from "@follow/components/ui/scroll-area/ScrollArea.js"
+import { cn, nextFrame } from "@follow/utils"
+import type { EditorState, LexicalEditor, SerializedEditorState } from "lexical"
+import { $getRoot } from "lexical"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Trans, useTranslation } from "react-i18next"
+
+import { useEditingMessageId, useSetEditingMessageId } from "~/modules/ai-chat/atoms/session"
+import { useChatStatus } from "~/modules/ai-chat/store/hooks"
+import type { BizUIMessage } from "~/modules/ai-chat/store/types"
+
+import { MentionPlugin, ShortcutPlugin } from "../../editor"
+import { isEditorStateUnchanged } from "../../utils/editor-state"
+
+interface EditableMessageProps {
+  messageId: string
+  parts: BizUIMessage["parts"]
+  onSave: (content: SerializedEditorState, editor: LexicalEditor) => void
+  onCancel: () => void
+  className?: string
+  initialHeight?: number
+}
+
+export const EditableMessage = ({
+  messageId,
+  parts,
+  onSave,
+  onCancel,
+  className,
+  initialHeight,
+}: EditableMessageProps) => {
+  const { t } = useTranslation("ai")
+  const status = useChatStatus()
+  const editingMessageId = useEditingMessageId()
+  const setEditingMessageId = useSetEditingMessageId()
+  const [isEmpty, setIsEmpty] = useState(false)
+  const editorRef = useRef<LexicalRichEditorRef>(null)
+  const [currentEditor, setCurrentEditor] = useState<LexicalEditor | null>(null)
+
+  // The stored state is the JSON string of the editor state
+  const initialEditorState = useMemo(() => {
+    const richTextPart = parts.find(
+      (part): part is Extract<BizUIMessage["parts"][number], { type: "data-rich-text" }> =>
+        part.type === "data-rich-text",
+    )
+    return richTextPart?.data.state
+  }, [parts])
+
+  const isEditing = editingMessageId === messageId
+  const isProcessing = status === "submitted" || status === "streaming"
+
+  // Compute initial editor height based on original message height
+  const editorInitialHeight = Math.max(56, initialHeight ?? 56)
+
+  // Initialize editor with initial content
+  useEffect(() => {
+    if (isEditing && editorRef.current && currentEditor) {
+      // Focus the editor
+      editorRef.current.focus()
+    }
+  }, [isEditing, currentEditor])
+
+  const setInitialEditorStateOnceRef = useRef(false)
+
+  useEffect(() => {
+    return nextFrame(() => {
+      if (setInitialEditorStateOnceRef.current) return
+      const editor = editorRef.current?.getEditor()
+
+      if (!editor || !initialEditorState) return
+      editor.setEditorState(editor.parseEditorState(initialEditorState))
+      setInitialEditorStateOnceRef.current = true
+    })
+  }, [initialEditorState])
+
+  const handleCancel = useCallback(() => {
+    setEditingMessageId(null)
+    onCancel()
+  }, [onCancel, setEditingMessageId])
+
+  const handleSave = useCallback(() => {
+    if (!currentEditor || !editorRef.current || editorRef.current.isEmpty()) return
+
+    // Sending an unchanged message again would replace its answer and use another request
+    if (initialEditorState && isEditorStateUnchanged(currentEditor, initialEditorState)) {
+      handleCancel()
+      return
+    }
+    onSave(currentEditor.getEditorState().toJSON(), currentEditor)
+  }, [currentEditor, handleCancel, initialEditorState, onSave])
+
+  const handleKeyDown = useCallback(
+    (event: KeyboardEvent) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault()
+        if (!isProcessing) {
+          handleSave()
+        }
+        return true
+      } else if (event.key === "Escape") {
+        event.preventDefault()
+        handleCancel()
+        return true
+      }
+      return false
+    },
+    [handleSave, handleCancel, isProcessing],
+  )
+
+  const handleEditorChange = useCallback((editorState: EditorState, editor: LexicalEditor) => {
+    setCurrentEditor(editor)
+    // Update isEmpty state based on editor content
+    editorState.read(() => {
+      const root = $getRoot()
+      const textContent = root.getTextContent().trim()
+      setIsEmpty(textContent === "")
+    })
+  }, [])
+
+  if (!isEditing) {
+    return null
+  }
+
+  return (
+    <div className={cn("relative", className)}>
+      {/* Edit input */}
+      <div className="relative overflow-hidden rounded-xl border border-border/80 bg-background/60 backdrop-blur-xl duration-200 focus-within:border-accent/80 focus-within:ring-2 focus-within:ring-accent/20">
+        <ScrollArea
+          rootClassName="mr-20 flex-1 overflow-auto"
+          viewportClassName="px-5 py-3.5"
+          viewportProps={{ style: { height: editorInitialHeight } }}
+        >
+          <LexicalRichEditor
+            ref={editorRef}
+            placeholder={t("chat.placeholder.edit_message")}
+            className="h-full min-w-64"
+            onChange={handleEditorChange}
+            onKeyDown={handleKeyDown}
+            namespace="EditableMessageRichEditor"
+            plugins={[MentionPlugin, ShortcutPlugin]}
+          />
+        </ScrollArea>
+
+        {/* Action buttons */}
+        <div className="absolute right-2 top-1/2 flex -translate-y-1/2 gap-1">
+          <button
+            type="button"
+            onClick={handleCancel}
+            disabled={isProcessing}
+            className="flex size-8 items-center justify-center rounded-lg text-text-tertiary transition-colors hover:bg-fill/50 hover:text-text disabled:opacity-50"
+            title={t("chat.message.edit_cancel")}
+          >
+            <i className="i-mgc-close-cute-re size-4" />
+          </button>
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={isProcessing || isEmpty}
+            className="flex size-8 items-center justify-center rounded-lg text-accent transition-colors hover:bg-accent/10 hover:text-accent disabled:opacity-50"
+            title={t("chat.message.edit_save")}
+          >
+            <i className="i-mgc-send-plane-cute-fi size-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* Helper text */}
+      <div className="relative mt-2">
+        <div className="absolute -inset-x-2 -bottom-2 -top-8 z-[-1] bg-background" />
+        <div className="relative z-[1] text-xs text-text-secondary">
+          <Trans
+            t={t}
+            i18nKey="chat.message.edit_hint"
+            components={{
+              enter: <Kbd abbr="Enter">Enter</Kbd>,
+              esc: <Kbd abbr="Esc">Esc</Kbd>,
+            }}
+          />
+        </div>
+      </div>
+    </div>
+  )
+}

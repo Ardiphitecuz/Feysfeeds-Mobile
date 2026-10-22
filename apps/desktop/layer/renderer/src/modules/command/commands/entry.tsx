@@ -1,0 +1,494 @@
+import { getMousePosition } from "@follow/components/hooks/useMouse.js"
+import { FeedViewType } from "@follow/constants"
+import { IN_ELECTRON } from "@follow/shared/constants"
+import { isEntryStarred } from "@follow/store/collection/getter"
+import { collectionSyncService } from "@follow/store/collection/store"
+import { isOnboardingEntryUrl } from "@follow/store/constants/onboarding"
+import { getEntry } from "@follow/store/entry/getter"
+import { entrySyncServices } from "@follow/store/entry/store"
+import { getMarkReadTimeRange } from "@follow/store/entry/utils"
+import { unreadSyncService } from "@follow/store/unread/store"
+import { cn, resolveUrlWithBase } from "@follow/utils/utils"
+import { useMutation } from "@tanstack/react-query"
+import { useTranslation } from "react-i18next"
+import { toast } from "sonner"
+
+import { showPopover } from "~/atoms/popover"
+import { getGeneralSettings } from "~/atoms/settings/general"
+import {
+  getShowSourceContent,
+  toggleShowSourceContent,
+  useSourceContentModal,
+} from "~/atoms/source-content"
+import { SharePanel } from "~/components/common/SharePanel"
+import { toggleEntryReadability } from "~/hooks/biz/useEntryActions"
+import { navigateEntry } from "~/hooks/biz/useNavigateEntry"
+import { getRouteParams } from "~/hooks/biz/useRouteParams"
+import { copyToClipboard } from "~/lib/clipboard"
+import { exportPageAsPdf } from "~/lib/export"
+import { getEffectiveRouteEntrySortOrder } from "~/modules/entry-column/hooks/entry-sort-order"
+import { getIsPreviewFeed } from "~/modules/entry-column/hooks/useIsPreviewFeed"
+import { markAllByRoute } from "~/modules/entry-column/hooks/useMarkAll"
+import { useGalleryModal } from "~/modules/entry-content/hooks"
+import { toggleEntryTts } from "~/modules/player/entry-tts"
+
+import { useRegisterFollowCommand } from "../hooks/use-register-command"
+import type { Command, CommandCategory } from "../types"
+import { COMMAND_ID } from "./id"
+
+const category: CommandCategory = "category.entry"
+const getCurrentEntrySortOrder = () => {
+  const routeParams = getRouteParams()
+  const { timelineSortOrder, unreadOnly } = getGeneralSettings()
+
+  return {
+    routeParams,
+    sortOrder: getEffectiveRouteEntrySortOrder({
+      sortOrder: timelineSortOrder,
+      unreadOnly,
+      feedId: routeParams.feedId,
+      inboxId: routeParams.inboxId,
+      isCollection: routeParams.isCollection,
+      isPreview: getIsPreviewFeed(routeParams),
+    }),
+  }
+}
+
+const useCollect = () => {
+  const { t } = useTranslation()
+  return useMutation({
+    mutationFn: async ({ entryId, view }: { entryId: string; view: FeedViewType }) => {
+      const { isCollection } = getRouteParams()
+      return collectionSyncService.starEntry({
+        entryId,
+        view,
+        invalidate: !isCollection,
+      })
+    },
+    onSuccess: () => {
+      toast.success(t("entry_actions.starred"), {
+        duration: 1000,
+      })
+    },
+  })
+}
+
+const useUnCollect = () => {
+  const { t } = useTranslation()
+  return useMutation({
+    mutationFn: async (entryId: string) => {
+      const { isCollection } = getRouteParams()
+      return collectionSyncService.unstarEntry({ entryId, invalidate: !isCollection })
+    },
+
+    onSuccess: () => {
+      toast.success(t("entry_actions.unstarred"), {
+        duration: 1000,
+      })
+    },
+  })
+}
+
+const useDeleteInboxEntry = () => {
+  const { t } = useTranslation()
+  return useMutation({
+    mutationFn: async (entryId: string) => {
+      await entrySyncServices.deleteInboxEntry(entryId)
+    },
+    onSuccess: () => {
+      toast.success(t("entry_actions.deleted"))
+    },
+    onError: () => {
+      toast.error(t("entry_actions.failed_to_delete"))
+    },
+  })
+}
+
+export const useRead = () =>
+  useMutation({
+    mutationFn: async ({ entryId }: { entryId: string }) =>
+      unreadSyncService.markEntryAsRead(entryId),
+  })
+
+export const useUnread = () =>
+  useMutation({
+    mutationFn: async ({ entryId }: { entryId: string }) =>
+      unreadSyncService.markEntryAsUnread(entryId),
+  })
+
+export const useRegisterEntryCommands = () => {
+  const { t } = useTranslation()
+  const collect = useCollect()
+  const uncollect = useUnCollect()
+  const deleteInboxEntry = useDeleteInboxEntry()
+  const showSourceContentModal = useSourceContentModal()
+  const openGalleryModal = useGalleryModal()
+  const read = useRead()
+  const unread = useUnread()
+
+  useRegisterFollowCommand(
+    [
+      {
+        id: COMMAND_ID.entry.star,
+        label: t("entry_actions.star"),
+        category,
+        icon: (props) => (
+          <i
+            className={cn(
+              props?.isActive ? "i-mgc-star-cute-fi text-orange-500" : "i-mgc-star-cute-re",
+            )}
+          />
+        ),
+        run: ({ entryId, view }) => {
+          const entry = getEntry(entryId)
+          const isStarred = isEntryStarred(entryId)
+          if (!entry) {
+            toast.error(t("entry_actions.unavailable.star"), { duration: 3000 })
+            return
+          }
+
+          if (isStarred) {
+            uncollect.mutate(entry.id)
+          } else {
+            collect.mutate({ entryId, view })
+          }
+        },
+      },
+      {
+        id: COMMAND_ID.entry.delete,
+        label: t("entry_actions.delete"),
+        icon: <i className="i-mgc-delete-2-cute-re" />,
+        category,
+        run: ({ entryId }) => {
+          const entry = getEntry(entryId)
+          if (!entry) {
+            toast.error(t("entry_actions.unavailable.delete"), { duration: 3000 })
+            return
+          }
+          deleteInboxEntry.mutate(entry.id)
+        },
+      },
+      {
+        id: COMMAND_ID.entry.copyLink,
+        label: t("entry_actions.copy_link"),
+        icon: <i className="i-mgc-link-cute-re" />,
+        category,
+        run: ({ entryId }) => {
+          const entry = getEntry(entryId)
+          if (!entry) {
+            toast.error(t("entry_actions.unavailable.copy_link"), { duration: 3000 })
+            return
+          }
+          // The onboarding entries link to an internal folo:// address nobody else can open
+          if (!entry.url || isOnboardingEntryUrl(entry.url)) return
+          copyToClipboard(entry.url)
+          toast(t("entry_actions.copied_notify", { which: t("words.link") }), {
+            duration: 1000,
+          })
+        },
+      },
+      {
+        id: COMMAND_ID.entry.exportAsPDF,
+        label: t("entry_actions.export_as_pdf"),
+        icon: <i className="i-mgc-pdf-cute-re" />,
+        category,
+        run: ({ entryId }) => {
+          const entry = getEntry(entryId)
+
+          if (!entry) {
+            toast.error(t("entry_actions.unavailable.export_as_pdf"), { duration: 3000 })
+            return
+          }
+
+          void exportPageAsPdf({ title: entry.title || entry.url || undefined }).catch(() => {
+            toast.error(t("entry_actions.failed_to_export_as_pdf"), { duration: 3000 })
+          })
+        },
+      },
+      {
+        id: COMMAND_ID.entry.copyTitle,
+        label: t("entry_actions.copy_title"),
+        icon: <i className="i-mgc-copy-cute-re" />,
+        category,
+        run: ({ entryId }) => {
+          const entry = getEntry(entryId)
+          if (!entry) {
+            toast.error(t("entry_actions.unavailable.copy_title"), { duration: 3000 })
+            return
+          }
+          if (!entry.title) return
+          copyToClipboard(entry.title)
+          toast(t("entry_actions.copied_notify", { which: t("words.title") }), {
+            duration: 1000,
+          })
+        },
+      },
+      {
+        id: COMMAND_ID.entry.openInBrowser,
+        label: t("entry_actions.open_in_browser", {
+          which: t(IN_ELECTRON ? "words.browser" : "words.newTab"),
+        }),
+        category,
+        icon: <i className="i-mgc-world-2-cute-re" />,
+        run: ({ entryId }) => {
+          const entry = getEntry(entryId)
+          if (!entry || !entry.url) {
+            toast.error(t("entry_actions.unavailable.open_in_browser"), { duration: 3000 })
+            return
+          }
+          if (isOnboardingEntryUrl(entry.url)) return
+          window.open(entry.url, "_blank")
+        },
+      },
+      {
+        id: COMMAND_ID.entry.viewSourceContent,
+        label: {
+          title: t("entry_actions.view_source_content"),
+          description: t("entry_actions.view_source_content_description"),
+        },
+        icon: <i className="i-mgc-web-cute-re" />,
+        category,
+        run: ({ entryId, siteUrl }) => {
+          if (!getShowSourceContent()) {
+            const entry = getEntry(entryId)
+            if (!entry || !entry.url) {
+              toast.error(t("entry_actions.unavailable.view_source_content"), { duration: 3000 })
+              return
+            }
+            // The onboarding entries have no source page, only an internal folo:// address
+            if (isOnboardingEntryUrl(entry.url)) return
+            const routeParams = getRouteParams()
+            const viewPreviewInModal = [
+              FeedViewType.SocialMedia,
+              FeedViewType.Videos,
+              FeedViewType.Pictures,
+            ].includes(routeParams.view)
+            if (viewPreviewInModal) {
+              showSourceContentModal({
+                title: entry.title ?? undefined,
+                src: siteUrl ? resolveUrlWithBase(entry.url, siteUrl) : entry.url,
+              })
+              return
+            }
+            const layoutEntryId = routeParams.entryId
+            if (layoutEntryId !== entry.id) {
+              navigateEntry({ entryId: entry.id })
+            }
+          }
+          toggleShowSourceContent()
+        },
+      },
+      {
+        id: COMMAND_ID.entry.share,
+        label: t("entry_actions.share"),
+        icon: <i className="i-mgc-share-forward-cute-re" />,
+        category,
+        run: ({ entryId }) => {
+          const entry = getEntry(entryId)
+          if (!entry || !entry.url) {
+            toast.error(t("entry_actions.unavailable.share"), { duration: 3000 })
+            return
+          }
+          if (isOnboardingEntryUrl(entry.url)) return
+
+          const xy = getMousePosition()
+          showPopover(
+            {
+              x: xy.x,
+              y: xy.y + 20,
+            },
+            <SharePanel entryId={entry.id} />,
+          )
+        },
+      },
+      {
+        id: COMMAND_ID.entry.readAbove,
+        label: t("entry_actions.mark_above_as_read"),
+        category,
+        run: ({ publishedAt }: { publishedAt: string }) => {
+          const { routeParams, sortOrder } = getCurrentEntrySortOrder()
+          return markAllByRoute(
+            routeParams,
+            getMarkReadTimeRange({
+              publishedAt,
+              position: "above",
+              sortOrder,
+            }),
+          )
+        },
+      },
+      {
+        id: COMMAND_ID.entry.read,
+        label: t("entry_actions.mark_as_read"),
+        category,
+        icon: (props) => (
+          <i className={cn(props?.isActive ? "i-mgc-round-cute-re" : "i-mgc-round-cute-fi")} />
+        ),
+        run: ({ entryId }) => {
+          const entry = getEntry(entryId)
+          if (!entry) {
+            toast.error(t("entry_actions.unavailable.toggle_read"), { duration: 3000 })
+            return
+          }
+          if (entry.read) {
+            unread.mutate({ entryId })
+          } else {
+            read.mutate({ entryId })
+          }
+        },
+      },
+      {
+        id: COMMAND_ID.entry.readBelow,
+        label: t("entry_actions.mark_below_as_read"),
+        category,
+        run: ({ publishedAt }: { publishedAt: string }) => {
+          const { routeParams, sortOrder } = getCurrentEntrySortOrder()
+          return markAllByRoute(
+            routeParams,
+            getMarkReadTimeRange({
+              publishedAt,
+              position: "below",
+              sortOrder,
+            }),
+          )
+        },
+      },
+      {
+        id: COMMAND_ID.entry.imageGallery,
+        label: {
+          title: t("entry_actions.image_gallery"),
+          description: t("entry_actions.image_gallery_description"),
+        },
+        icon: <i className="i-mgc-pic-cute-fi" />,
+        category,
+        run: ({ entryId }) => {
+          openGalleryModal(entryId)
+        },
+      },
+      {
+        id: COMMAND_ID.entry.tts,
+        label: {
+          title: t("entry_content.header.play_tts"),
+          description: t("entry_content.header.play_tts_description"),
+        },
+        category,
+        icon: <i className="i-mgc-voice-cute-re" />,
+        run: async ({ entryId }) => {
+          await toggleEntryTts(entryId, {
+            toastTitle: t("entry_content.header.play_tts"),
+          })
+        },
+      },
+      {
+        id: COMMAND_ID.entry.readability,
+        category,
+        label: {
+          title: t("entry_content.header.readability"),
+          description: t("entry_content.header.readability_description"),
+        },
+        icon: (props) => (
+          <i className={props?.isActive ? "i-mgc-docment-cute-fi" : "i-mgc-docment-cute-re"} />
+        ),
+        run: async ({ entryId, entryUrl }) => {
+          return toggleEntryReadability({
+            id: entryId,
+            url: entryUrl,
+          })
+        },
+      },
+    ],
+    {},
+  )
+}
+
+export type StarCommand = Command<{
+  id: typeof COMMAND_ID.entry.star
+  fn: (data: { entryId: string; view: FeedViewType }) => void
+}>
+
+export type DeleteCommand = Command<{
+  id: typeof COMMAND_ID.entry.delete
+  fn: (data: { entryId: string }) => void
+}>
+
+export type CopyLinkCommand = Command<{
+  id: typeof COMMAND_ID.entry.copyLink
+  fn: (data: { entryId: string }) => void
+}>
+
+export type ExportAsPDFCommand = Command<{
+  id: typeof COMMAND_ID.entry.exportAsPDF
+  fn: (data: { entryId: string }) => void
+}>
+
+export type CopyTitleCommand = Command<{
+  id: typeof COMMAND_ID.entry.copyTitle
+  fn: (data: { entryId: string }) => void
+}>
+
+export type OpenInBrowserCommand = Command<{
+  id: typeof COMMAND_ID.entry.openInBrowser
+  fn: (data: { entryId: string }) => void
+}>
+
+export type ViewSourceContentCommand = Command<{
+  id: typeof COMMAND_ID.entry.viewSourceContent
+  fn: (data: { entryId: string; siteUrl?: string | null | undefined }) => void
+}>
+
+export type ShareCommand = Command<{
+  id: typeof COMMAND_ID.entry.share
+  fn: (data: { entryId: string }) => void
+}>
+
+export type ReadCommand = Command<{
+  id: typeof COMMAND_ID.entry.read
+  fn: (data: { entryId: string }) => void
+}>
+
+export type ReadAboveCommand = Command<{
+  id: typeof COMMAND_ID.entry.readAbove
+  fn: (data: { publishedAt: string }) => void
+}>
+
+export type ReadBelowCommand = Command<{
+  id: typeof COMMAND_ID.entry.readBelow
+  fn: (data: { publishedAt: string }) => void
+}>
+
+export type ToggleAITranslationCommand = Command<{
+  id: typeof COMMAND_ID.entry.toggleAITranslation
+  fn: () => void
+}>
+
+export type ImageGalleryCommand = Command<{
+  id: typeof COMMAND_ID.entry.imageGallery
+  fn: (data: { entryId: string }) => void
+}>
+
+export type TTSCommand = Command<{
+  id: typeof COMMAND_ID.entry.tts
+  fn: (data: { entryId: string }) => void
+}>
+
+export type ReadabilityCommand = Command<{
+  id: typeof COMMAND_ID.entry.readability
+  fn: (data: { entryId: string; entryUrl: string }) => void
+}>
+
+export type EntryCommand =
+  | StarCommand
+  | DeleteCommand
+  | CopyLinkCommand
+  | ExportAsPDFCommand
+  | CopyTitleCommand
+  | OpenInBrowserCommand
+  | ViewSourceContentCommand
+  | ShareCommand
+  | ReadCommand
+  | ReadAboveCommand
+  | ReadBelowCommand
+  | ToggleAITranslationCommand
+  | ImageGalleryCommand
+  | TTSCommand
+  | ReadabilityCommand

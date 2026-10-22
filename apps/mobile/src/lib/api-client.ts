@@ -1,0 +1,177 @@
+import { userActions } from "@follow/store/user/store"
+import { trackApiConnection } from "@follow/utils/api-connection"
+import { createMobileAPIHeaders } from "@follow/utils/headers"
+import { FollowClient } from "@follow-app/client-sdk"
+import { fetch } from "expo/fetch"
+import { nativeApplicationVersion } from "expo-application"
+import { Platform } from "react-native"
+import DeviceInfo from "react-native-device-info"
+
+import { setApiUnreachable } from "@/src/atoms/api-connection"
+
+import { getAuthStateRevision, getCookie, getLastAuthStateChangeAt } from "./auth"
+import { getClientId, getSessionId } from "./client-session"
+import { getUserAgent } from "./native/user-agent"
+import { destination } from "./navigation/biz/Destination"
+import { trackFetch } from "./network-activity"
+import { proxyEnv } from "./proxy-env"
+
+// Tracked so a runtime reload can wait for the requests to settle first (see `reload-app.ts`).
+const trackedFetch = trackFetch(fetch)
+
+export const legacyFollowClient = new FollowClient({
+  credentials: "omit",
+  timeout: 60_000,
+  baseURL: proxyEnv.FOLO_LEGACY_API_URL,
+  fetch: async (input, options = {}) => trackedFetch(input.toString(), options as any) as any,
+})
+
+export const rawFollowApi = legacyFollowClient.api
+
+let activeFollowApi: any = rawFollowApi
+
+export const setGlobalFollowApi = (adapter: any) => {
+  activeFollowApi = adapter
+}
+
+export const followClient: typeof legacyFollowClient = new Proxy(legacyFollowClient, {
+  get(target, prop, receiver) {
+    if (prop === "api") {
+      return activeFollowApi
+    }
+    return Reflect.get(target, prop, receiver)
+  },
+})
+
+export const followApi: typeof rawFollowApi = new Proxy(rawFollowApi, {
+  get(target, prop, receiver) {
+    if (activeFollowApi && activeFollowApi !== rawFollowApi) {
+      return Reflect.get(activeFollowApi, prop, receiver)
+    }
+    return Reflect.get(target, prop, receiver)
+  },
+})
+
+followClient.addRequestInterceptor(async (ctx) => {
+  const { url } = ctx
+
+  try {
+    const urlObj = new URL(url)
+    urlObj.searchParams.set("t", Date.now().toString())
+    ctx.url = urlObj.toString()
+  } catch {
+    /* empty */
+  }
+
+  return ctx
+})
+followClient.addRequestInterceptor(async (ctx) => {
+  const { options } = ctx
+  ;(options as typeof options & { __followAuthRevision?: number }).__followAuthRevision =
+    getAuthStateRevision()
+
+  const header = options.headers || {}
+  header["X-Client-Id"] = getClientId()
+  header["X-Session-Id"] = getSessionId()
+  header["User-Agent"] = await getUserAgent()
+  header["cookie"] = await getCookie()
+
+  const apiHeader = createMobileAPIHeaders({
+    version: nativeApplicationVersion || "",
+    rnPlatform: {
+      OS: Platform.OS,
+      isPad: Platform.OS === "ios" && Platform.isPad,
+    },
+    installerPackageName: await DeviceInfo.getInstallerPackageName(),
+  })
+
+  options.headers = {
+    ...header,
+    ...apiHeader,
+  }
+  return ctx
+})
+
+const getRequestCookie = (headers: HeadersInit | undefined) => {
+  if (!headers) {
+    return
+  }
+
+  if (headers instanceof Headers) {
+    return headers.get("cookie") ?? undefined
+  }
+
+  if (Array.isArray(headers)) {
+    return headers.find(([key]) => key.toLowerCase() === "cookie")?.[1]
+  }
+
+  return Object.entries(headers).find(([key]) => key.toLowerCase() === "cookie")?.[1]
+}
+
+const getRequestAuthRevision = (options: Record<string, unknown>) => {
+  const revision = options.__followAuthRevision
+  return typeof revision === "number" ? revision : undefined
+}
+
+followClient.addResponseInterceptor(async (ctx) => {
+  const { options, response } = ctx
+  if (response.status === 401) {
+    const currentCookie = await getCookie()
+    const requestCookie = getRequestCookie(options.headers)
+    const requestAuthRevision = getRequestAuthRevision(options as Record<string, unknown>)
+    const currentAuthRevision = getAuthStateRevision()
+
+    if (typeof requestAuthRevision === "number" && requestAuthRevision < currentAuthRevision) {
+      return ctx.response
+    }
+
+    if (currentCookie && requestCookie !== currentCookie) {
+      return ctx.response
+    }
+
+    if (currentCookie) {
+      return ctx.response
+    }
+
+    if (Date.now() - getLastAuthStateChangeAt() < 10_000) {
+      return ctx.response
+    }
+
+    userActions.removeCurrentUser()
+    destination.Login()
+  } else if (response.status >= 400) {
+    // try {
+    //   const isJSON = response.headers.get("content-type")?.includes("application/json")
+    //   const json = isJSON ? await response.json() : null
+    //   if (isJSON && json?.code?.toString().startsWith("11")) {
+    //   }
+    // } catch (error) {
+    //   console.error(`Request failed with status ${response.status}`, error)
+    // }
+  }
+
+  return ctx.response
+})
+
+const getFeyFeedsBaseUrl = () => {
+  const url = proxyEnv.FEYFEEDS_API_URL
+  if (!url || url.includes("localhost") || url.includes("127.0.0.1")) {
+    return "https://feyfeeds-api.feyfeeds.workers.dev"
+  }
+  return url.replace(/\/$/, "")
+}
+
+/** Whether the API answers at all. Any HTTP status counts; the endpoint needs no session. */
+const probeApiReachability = async () => {
+  const url = `${getFeyFeedsBaseUrl()}/health`
+  await trackedFetch(url, {
+    signal: AbortSignal.timeout(10_000),
+  })
+  return true
+}
+
+trackApiConnection(followClient, {
+  probe: probeApiReachability,
+  onUnreachable: () => setApiUnreachable(true),
+  onRecovered: () => setApiUnreachable(false),
+})

@@ -1,0 +1,62 @@
+appId: is.follow
+---
+- tapOn:
+    id: tab-IndexTabScreen
+- tapOn:
+    id: timeline-view-videos
+- tapOn:
+    id: timeline-view-articles
+- extendedWaitUntil:
+    visible:
+      id: timeline-entry-first
+    timeout: 20000
+- tapOn:
+    id: timeline-entry-first
+    point: "50%,50%"
+- extendedWaitUntil:
+    notVisible:
+      id: timeline-entry-first
+    timeout: 20000
+- extendedWaitUntil:
+    visible: Hey there! Welcome to Folo. We're so glad to have you.
+    timeout: 20000
+- scrollUntilVisible:
+    element:
+      text: Your Subscriptions
+    direction: DOWN
+    timeout: 20000
+    centerElement: true
+- pressKey: Back
+- tapOn:
+    id: timeline-view-articles
+- extendedWaitUntil:
+    visible:
+      id: timeline-entry-first
+    timeout: 20000
+- longPressOn:
+    id: timeline-entry-first
+- runFlow:
+    when:
+      visible: Mark as Read
+    commands:
+      - tapOn: Mark as Read
+      - longPressOn:
+          id: timeline-entry-first
+      - assertVisible: Mark as Unread
+      - tapOn: Mark as Unread
+      - longPressOn:
+          id: timeline-entry-first
+      - assertVisible: Mark as Read
+- runFlow:
+    when:
+      visible: Mark as Unread
+    commands:
+      - tapOn: Mark as Unread
+      - longPressOn:
+          id: timeline-entry-first
+      - assertVisible: Mark as Read
+      - tapOn: Mark as Read
+      - longPressOn:
+          id: timeline-entry-first
+      - assertVisible: Mark as Unread
+- pressKey: Back

@@ -1,0 +1,10 @@
+diff --git a/android/CMakeLists.txt b/android/CMakeLists.txt
+index 9dd4038ad2ed7257f51ed7d0f6b6ba916cb2e305..4a06fb6189a9e2c57d9fb1fa74c5eb592aebfbc5 100644
+--- a/android/CMakeLists.txt	
++++ b/android/CMakeLists.txt	
+@@ -50,4 +50,5 @@ target_link_libraries(
+   bzip2
+   fbjni::fbjni
+   android
++  c++_shared
+ )

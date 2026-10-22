@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "407265781504",
+    "project_id": "feyfeeds",
+    "storage_bucket": "feyfeeds.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:407265781504:android:748146c8375b01af3ff5e5",
+        "android_client_info": {
+          "package_name": "com.feyfeeds.mobile"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAy9HZYeL45dlBVB567EQldqtmuR9ZQ_Ek"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

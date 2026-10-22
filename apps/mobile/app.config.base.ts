@@ -1,0 +1,208 @@
+import type { ConfigContext, ExpoConfig } from "expo/config"
+import { resolve } from "pathe"
+
+const PKG = require("./package.json") as typeof import("./package.json")
+
+// const roundedIconPath = resolve(__dirname, "../../resources/icon.png")
+const iconPathMap = {
+  production: resolve(__dirname, "./assets/icon.png"),
+  development: resolve(__dirname, "./assets/icon-dev.png"),
+  "ios-simulator": resolve(__dirname, "./assets/icon-dev.png"),
+  preview: resolve(__dirname, "./assets/icon-staging.png"),
+} as Record<string, string>
+const iconPath = iconPathMap[process.env.PROFILE || "production"] || iconPathMap.production
+
+const adaptiveIconPath = resolve(__dirname, "./assets/adaptive-icon.png")
+const splashIconPath = resolve(__dirname, "./assets/splash-icon.png")
+
+const isDev = process.env.NODE_ENV === "development"
+const semverPattern = /^\d+\.\d+\.\d+$/
+export const resolveRuntimeVersion = ({
+  isDevelopment,
+  packageVersion,
+  otaRuntimeVersionOverride,
+}: {
+  isDevelopment: boolean
+  packageVersion: string
+  otaRuntimeVersionOverride?: string | null
+}) => {
+  if (isDevelopment) {
+    return "0.0.0-dev"
+  }
+
+  if (otaRuntimeVersionOverride) {
+    if (!semverPattern.test(otaRuntimeVersionOverride)) {
+      throw new Error(
+        `Expected OTA_RUNTIME_VERSION to be a plain x.y.z version, got ${otaRuntimeVersionOverride}`,
+      )
+    }
+
+    return otaRuntimeVersionOverride
+  }
+
+  return packageVersion
+}
+
+export default ({ config }: ConfigContext): ExpoConfig => {
+  const runtimeVersion = resolveRuntimeVersion({
+    isDevelopment: isDev,
+    packageVersion: PKG.version,
+    otaRuntimeVersionOverride: process.env.OTA_RUNTIME_VERSION ?? null,
+  })
+
+  const result: ExpoConfig = {
+    ...config,
+
+    extra: {
+      e2eEnvProfile: process.env.EXPO_PUBLIC_E2E_ENV_PROFILE ?? null,
+      e2eLanguage: process.env.EXPO_PUBLIC_E2E_LANGUAGE ?? null,
+    },
+    updates: {
+      enabled: false,
+      checkAutomatically: "NEVER",
+    },
+    runtimeVersion,
+
+    name: "FeyFeeds",
+    slug: "feyfeeds",
+    version: PKG.version,
+    orientation: "portrait" as const,
+    icon: iconPath,
+    scheme: ["feyfeeds"],
+    userInterfaceStyle: "automatic" as const,
+    ios: {
+      supportsTablet: true,
+      bundleIdentifier: "com.feyfeeds.mobile",
+      usesAppleSignIn: true,
+      infoPlist: {
+        FIREBASE_ANALYTICS_COLLECTION_DEACTIVATED: true,
+        LSApplicationCategoryType: "public.app-category.news",
+        ITSAppUsesNonExemptEncryption: false,
+        UIBackgroundModes: ["audio"],
+        LSApplicationQueriesSchemes: ["bilibili", "youtube"],
+        CFBundleAllowMixedLocalizations: true,
+        // apps/mobile/src/@types/constants.ts currentSupportedLanguages
+        CFBundleLocalizations: ["en", "ja", "zh-CN", "zh-TW", "fr-FR"],
+        CFBundleDevelopmentRegion: "en",
+      },
+      googleServicesFile: "./build/GoogleService-Info.plist",
+    },
+    android: {
+      package: "com.feyfeeds.mobile",
+      // Media selection uses system pickers; saving only needs write access on older Android versions.
+      blockedPermissions: [
+        "android.permission.ACCESS_MEDIA_LOCATION",
+        "android.permission.CAMERA",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_AUDIO",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+        "android.permission.RECORD_AUDIO",
+      ],
+      adaptiveIcon: {
+        foregroundImage: adaptiveIconPath,
+        monochromeImage: adaptiveIconPath,
+        backgroundColor: "#FF5C00",
+      },
+      googleServicesFile: "./build/google-services.json",
+    },
+    // web: {
+    //   bundler: "metro",
+    //   output: "static",
+    //   favicon: iconPath,
+    // },
+    plugins: [
+      [
+        "expo-document-picker",
+        {
+          iCloudContainerEnvironment: "Production",
+        },
+      ],
+      "expo-localization",
+      [
+        "expo-splash-screen",
+        {
+          android: {
+            image: splashIconPath,
+            imageWidth: 200,
+          },
+        },
+      ],
+      [
+        "expo-build-properties",
+        {
+          ios: {
+            deploymentTarget: "16.4",
+            // Expo SDK 55 archive builds regress with use_frameworks + prebuilt RN core.
+            buildReactNativeFromSource: true,
+            useFrameworks: "static",
+            forceStaticLinking: ["RNFBApp", "RNFBAnalytics", "RNFBMessaging", "RNFBAppCheck"],
+            // Apps linked against the iOS 27 SDK (Xcode 27) crash at launch on iOS 27 without
+            // the UIScene life cycle. Remove after upgrading to Expo SDK 58, which adopts it natively.
+            enableSceneSupport: true,
+          },
+        },
+      ],
+      "expo-sqlite",
+      [
+        "expo-media-library",
+        {
+          photosPermission: "Allow $(PRODUCT_NAME) to access your photos.",
+          savePhotosPermission: "Allow $(PRODUCT_NAME) to save photos.",
+          isAccessMediaLocationEnabled: false,
+          granularPermissions: [],
+        },
+      ],
+      "expo-apple-authentication",
+      "expo-status-bar",
+      "expo-web-browser",
+      "expo-image",
+      "expo-sharing",
+      [
+        "expo-video",
+        {
+          supportsBackgroundPlayback: true,
+          supportsPictureInPicture: true,
+        },
+      ],
+      [
+        require("./plugins/with-follow-assets.js"),
+        {
+          // Add asset directory paths, the plugin copies the files in the given paths to the app bundle folder named Assets
+          assetsPath: resolve(__dirname, "..", "..", "out", "rn-web"),
+        },
+      ],
+      require("./plugins/with-follow-ios-resources.js"),
+      require("./plugins/with-rnfb-build-properties.js"),
+
+      require("./plugins/with-gradle-jvm-heap-size-increase.js"),
+      require("./plugins/with-android-jdk-21.js"),
+      require("./plugins/with-android-manifest-plugin.js"),
+      "expo-secure-store",
+      ["@react-native-firebase/app", { ios: { disableSPM: true } }],
+      [
+        "expo-image-picker",
+        {
+          photosPermission: "Allow $(PRODUCT_NAME) to access your photos.",
+          cameraPermission: false,
+          microphonePermission: false,
+        },
+      ],
+      [
+        "expo-notifications",
+        {
+          enableBackgroundRemoteNotifications: true,
+        },
+      ],
+      "expo-background-task",
+    ],
+  }
+
+  if (process.env.PROFILE !== "production") {
+    result.plugins ||= []
+    result.plugins.push(require("./plugins/android-trust-user-certs.js"))
+  }
+
+  return result
+}

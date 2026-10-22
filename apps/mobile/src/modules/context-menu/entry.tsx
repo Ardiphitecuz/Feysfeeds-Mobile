@@ -1,0 +1,227 @@
+import type { FeedViewType } from "@follow/constants"
+import { useIsEntryStarred } from "@follow/store/collection/hooks"
+import { collectionSyncService } from "@follow/store/collection/store"
+import { getEntry } from "@follow/store/entry/getter"
+import { useEntry } from "@follow/store/entry/hooks"
+import { getMarkReadTimeRange } from "@follow/store/entry/utils"
+import { unreadSyncService } from "@follow/store/unread/store"
+import { useIsLoggedIn } from "@follow/store/user/hooks"
+import { PortalProvider } from "@gorhom/portal"
+import type { PropsWithChildren } from "react"
+import { useCallback } from "react"
+import { useTranslation } from "react-i18next"
+import { Platform, Share, View } from "react-native"
+
+import {
+  getHidePrivateSubscriptionsInTimeline,
+  useEffectiveEntrySortOrder,
+} from "@/src/atoms/settings/general"
+import { EntryContentWebView } from "@/src/components/native/webview/EntryContentWebView"
+import { WebViewManager } from "@/src/components/native/webview/webview-manager"
+import { ContextMenu } from "@/src/components/ui/context-menu"
+import { Text } from "@/src/components/ui/typography/Text"
+import { useNavigation } from "@/src/lib/navigation/hooks"
+import { createLinkShareContent } from "@/src/lib/share"
+import { toast } from "@/src/lib/toast"
+import { EntryDetailScreen } from "@/src/screens/(stack)/entries/[entryId]/EntryDetailScreen"
+
+import {
+  getFetchEntryPayload,
+  useIsTimelineEntrySource,
+  useSelectedFeed,
+  useSelectedView,
+} from "../screen/atoms"
+
+export const EntryItemContextMenu = ({
+  id,
+  children,
+  view,
+  isTimelineSource: isTimelineSourceOverride,
+}: PropsWithChildren<{
+  id: string
+  view: FeedViewType
+  isTimelineSource?: boolean
+}>) => {
+  const { t } = useTranslation()
+  const selectedView = useSelectedView()
+  const selectedFeed = useSelectedFeed()
+  const isLoggedIn = useIsLoggedIn()
+  const currentIsTimelineSource = useIsTimelineEntrySource()
+  const isTimelineSource = isTimelineSourceOverride ?? currentIsTimelineSource
+  const sortOrder = useEffectiveEntrySortOrder({ isTimelineSource })
+  const entry = useEntry(id, (state) => ({
+    read: state.read,
+    feedId: state.feedId,
+    title: state.title,
+    publishedAt: state.publishedAt,
+    url: state.url,
+  }))
+  const feedId = entry?.feedId
+  const isEntryStarred = useIsEntryStarred(id)
+  const navigation = useNavigation()
+  const handlePressPreview = useCallback(() => {
+    if (entry) {
+      const fullEntry = getEntry(id)
+      if (fullEntry) {
+        WebViewManager.setEntry(fullEntry)
+      }
+      navigation.pushControllerView(EntryDetailScreen, {
+        entryId: id,
+        view: view!,
+      })
+    }
+  }, [entry, id, navigation, view])
+  if (!entry) return null
+  return (
+    <ContextMenu.Root>
+      <ContextMenu.Trigger asChild>{children}</ContextMenu.Trigger>
+
+      <ContextMenu.Content>
+        <ContextMenu.Preview size="STRETCH" onPress={handlePressPreview}>
+          {() => (
+            <PortalProvider>
+              <View className="flex-1 bg-system-background">
+                <Text className="mt-5 p-4 text-2xl font-semibold text-label" numberOfLines={2}>
+                  {entry.title?.trim()}
+                </Text>
+                <EntryContentWebView entryId={id} />
+              </View>
+            </PortalProvider>
+          )}
+        </ContextMenu.Preview>
+
+        {isLoggedIn && (
+          <>
+            <ContextMenu.Item
+              key="MarkAsReadAbove"
+              onSelect={() => {
+                const payload = getFetchEntryPayload(selectedFeed, selectedView)
+                const { publishedAt } = entry
+                unreadSyncService.markBatchAsRead({
+                  view: selectedView,
+                  filter: payload,
+                  time: getMarkReadTimeRange({
+                    publishedAt,
+                    position: "above",
+                    sortOrder,
+                  }),
+                  excludePrivate: getHidePrivateSubscriptionsInTimeline(),
+                })
+              }}
+            >
+              <ContextMenu.ItemIcon
+                ios={{
+                  name: "arrow.up",
+                }}
+              />
+              <ContextMenu.ItemTitle>
+                {t("operation.mark_all_as_read_which", {
+                  which: t("operation.mark_all_as_read_which_above"),
+                })}
+              </ContextMenu.ItemTitle>
+            </ContextMenu.Item>
+
+            <ContextMenu.Item
+              key="MarkAsRead"
+              onSelect={() => {
+                entry.read
+                  ? unreadSyncService.markEntryAsUnread(id)
+                  : unreadSyncService.markEntryAsRead(id)
+              }}
+            >
+              <ContextMenu.ItemTitle>
+                {entry.read ? t("operation.mark_as_unread") : t("operation.mark_as_read")}
+              </ContextMenu.ItemTitle>
+              <ContextMenu.ItemIcon
+                ios={{
+                  name: entry.read ? "circle.fill" : "checkmark.circle",
+                }}
+              />
+            </ContextMenu.Item>
+
+            <ContextMenu.Item
+              key="MarkAsReadBelow"
+              onSelect={() => {
+                const payload = getFetchEntryPayload(selectedFeed, selectedView)
+                const { publishedAt } = entry
+                unreadSyncService.markBatchAsRead({
+                  view: selectedView,
+                  filter: payload,
+                  time: getMarkReadTimeRange({
+                    publishedAt,
+                    position: "below",
+                    sortOrder,
+                  }),
+                  excludePrivate: getHidePrivateSubscriptionsInTimeline(),
+                })
+              }}
+            >
+              <ContextMenu.ItemIcon
+                ios={{
+                  name: "arrow.down",
+                }}
+              />
+              <ContextMenu.ItemTitle>
+                {t("operation.mark_all_as_read_which", {
+                  which: t("operation.mark_all_as_read_which_below"),
+                })}
+              </ContextMenu.ItemTitle>
+            </ContextMenu.Item>
+          </>
+        )}
+
+        {isLoggedIn && feedId && view !== undefined && (
+          <ContextMenu.Item
+            key="Star"
+            onSelect={() => {
+              if (isEntryStarred) {
+                collectionSyncService.unstarEntry({
+                  entryId: id,
+                })
+                toast.success(t("operation.unstar_success"))
+              } else {
+                collectionSyncService.starEntry({
+                  entryId: id,
+                  view,
+                })
+                toast.success(t("operation.star_success"))
+              }
+            }}
+          >
+            <ContextMenu.ItemIcon
+              ios={{
+                name: isEntryStarred ? "star.slash" : "star",
+              }}
+            />
+            <ContextMenu.ItemTitle>
+              {isEntryStarred ? t("operation.unstar") : t("operation.star")}
+            </ContextMenu.ItemTitle>
+          </ContextMenu.Item>
+        )}
+
+        {entry.url && (
+          <ContextMenu.Item
+            key="Share"
+            onSelect={async () => {
+              if (!entry.url) return
+              await Share.share(
+                createLinkShareContent({
+                  platform: Platform.OS,
+                  title: entry.title || t("operation.share_title.link"),
+                  url: entry.url,
+                }),
+              )
+            }}
+          >
+            <ContextMenu.ItemIcon
+              ios={{
+                name: "square.and.arrow.up",
+              }}
+            />
+            <ContextMenu.ItemTitle>{t("operation.share")}</ContextMenu.ItemTitle>
+          </ContextMenu.Item>
+        )}
+      </ContextMenu.Content>
+    </ContextMenu.Root>
+  )
+}

@@ -1,0 +1,12 @@
+diff --git a/android/CMakeLists.txt b/android/CMakeLists.txt
+index e1f364139d81b6759fd8ed5f1e3a9a8546ee80bf..447034664d5e1e7fc9c1b50da2d360b6ce40f04f 100644
+--- a/android/CMakeLists.txt	
++++ b/android/CMakeLists.txt	
+@@ -83,6 +83,7 @@ target_link_libraries(worklets android log ReactAndroid::reactnative
+                       ReactAndroid::jsi fbjni::fbjni)
+ 
+ target_link_libraries(worklets hermes-engine::hermesvm)
++target_link_libraries(worklets c++_shared)
+ 
+ if(${HERMES_ENABLE_DEBUGGER})
+   string(APPEND CMAKE_CXX_FLAGS " -DHERMES_ENABLE_DEBUGGER=1")

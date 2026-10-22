@@ -1,0 +1,238 @@
+import {
+  useActionRules,
+  useIsActionDataDirty,
+  usePrefetchActions,
+  useUpdateActionsMutation,
+} from "@follow/store/action/hooks"
+import type { ActionModel } from "@follow/store/action/store"
+import { actionActions } from "@follow/store/action/store"
+import { useCallback, useEffect } from "react"
+import { useTranslation } from "react-i18next"
+import type { ListRenderItem } from "react-native"
+import { StyleSheet, View } from "react-native"
+import Animated, { LinearTransition } from "react-native-reanimated"
+import { useColors } from "react-native-uikit-colors"
+
+import { SwipeableGroupProvider, SwipeableItem } from "@/src/components/common/SwipeableItem"
+import { HeaderSubmitTextButton } from "@/src/components/layouts/header/HeaderElements"
+import {
+  NavigationBlurEffectHeaderView,
+  SafeNavigationScrollView,
+} from "@/src/components/layouts/views/SafeNavigationScrollView"
+import {
+  GroupedInformationCell,
+  GroupedInsetActivityIndicatorCell,
+  GroupedInsetListBaseCell,
+  GroupedInsetListCard,
+  GroupedPlainButtonCell,
+} from "@/src/components/ui/grouped/GroupedList"
+import { PlatformActivityIndicator } from "@/src/components/ui/loading/PlatformActivityIndicator"
+import { ItemPressable } from "@/src/components/ui/pressable/ItemPressable"
+import { Switch } from "@/src/components/ui/switch/Switch"
+import { Text } from "@/src/components/ui/typography/Text"
+import { Magic2CuteFiIcon } from "@/src/icons/magic_2_cute_fi"
+import { toastFetchError } from "@/src/lib/error-parser"
+import { useNavigation } from "@/src/lib/navigation/hooks"
+import { useSetScreenOptions } from "@/src/lib/navigation/ScreenOptionsContext"
+import { toast } from "@/src/lib/toast"
+
+import { EditRuleScreen } from "./EditRule"
+
+export const ActionsScreen = () => {
+  const { t } = useTranslation("settings")
+  const { isLoading, isError, isFetching, refetch } = usePrefetchActions()
+  const rules = useActionRules()
+  const isDirty = useIsActionDataDirty()
+  // Saving sends every rule, so editing an empty list here would wipe the server's rules
+  const loadFailed = isError && !actionActions.isLoaded()
+  // Leaving by a swipe would skip the unsaved changes prompt of the back button
+  const setScreenOptions = useSetScreenOptions()
+  useEffect(() => {
+    setScreenOptions({ gestureEnabled: !isDirty })
+  }, [isDirty, setScreenOptions])
+  // Edits the user chose to leave behind must not stay in the store
+  useEffect(() => {
+    return () => {
+      actionActions.discardLocalEdits().catch(console.error)
+    }
+  }, [])
+  return (
+    <SafeNavigationScrollView
+      Header={
+        <NavigationBlurEffectHeaderView
+          title={t("titles.actions")}
+          headerRight={useCallback(
+            () => (
+              <SaveRuleButton disabled={!isDirty} />
+            ),
+            [isDirty],
+          )}
+          promptBeforeLeave={isDirty}
+        />
+      }
+      nestedScrollEnabled
+      className="bg-system-grouped-background"
+    >
+      <View className="mt-6">
+        <GroupedInsetListCard>
+          <GroupedInformationCell
+            title={t("titles.actions")}
+            description={t("actions.info")}
+            icon={<Magic2CuteFiIcon height={40} width={40} color="#fff" />}
+            iconBackgroundColor="#9333EA"
+          />
+        </GroupedInsetListCard>
+      </View>
+
+      {loadFailed ? (
+        <ActionLoadError isRetrying={isFetching} onRetry={() => void refetch()} />
+      ) : (
+        <View className="mt-6">
+          <GroupedInsetListCard>
+            {rules.length > 0 ? (
+              <SwipeableGroupProvider>
+                <Animated.FlatList
+                  keyExtractor={keyExtractor}
+                  itemLayoutAnimation={LinearTransition}
+                  scrollEnabled={false}
+                  data={rules}
+                  renderItem={ListItemCell}
+                  ItemSeparatorComponent={ItemSeparatorComponent}
+                />
+              </SwipeableGroupProvider>
+            ) : isLoading && rules.length === 0 ? (
+              <View className="my-4">
+                <PlatformActivityIndicator />
+              </View>
+            ) : null}
+          </GroupedInsetListCard>
+          <NewRuleButton />
+        </View>
+      )}
+    </SafeNavigationScrollView>
+  )
+}
+const ActionLoadError = ({ isRetrying, onRetry }: { isRetrying: boolean; onRetry: () => void }) => {
+  const { t } = useTranslation("settings")
+  const { t: tCommon } = useTranslation("common")
+  return (
+    <GroupedInsetListCard className="mt-6">
+      <GroupedInsetListBaseCell>
+        <Text className="flex-1 text-sm text-secondary-label">{t("actions.load_failed")}</Text>
+      </GroupedInsetListBaseCell>
+      {isRetrying ? (
+        <GroupedInsetActivityIndicatorCell />
+      ) : (
+        <GroupedPlainButtonCell label={tCommon("retry")} onPress={onRetry} />
+      )}
+    </GroupedInsetListCard>
+  )
+}
+const NewRuleButton = () => {
+  const { t } = useTranslation("settings")
+  return (
+    <GroupedInsetListCard className="mt-6">
+      <GroupedPlainButtonCell
+        label={t("actions.newRule")}
+        onPress={() => {
+          actionActions.addRule((number) =>
+            t("actions.actionName", {
+              number,
+            }),
+          )
+        }}
+      />
+    </GroupedInsetListCard>
+  )
+}
+const SaveRuleButton = ({ disabled }: { disabled?: boolean }) => {
+  const { t } = useTranslation("settings")
+  const navigation = useNavigation()
+  const { mutate, isPending } = useUpdateActionsMutation({
+    onSuccess() {
+      navigation.back()
+      toast.success(t("actions.saveSuccess"))
+    },
+    onError(error) {
+      toastFetchError(error)
+    },
+  })
+  return (
+    <HeaderSubmitTextButton
+      label={t("actions.save")}
+      isValid={!disabled}
+      onPress={mutate}
+      isLoading={isPending}
+    />
+  )
+}
+const ItemSeparatorComponent = () => {
+  return (
+    // No flex-1: as the only flexible child of its list cell it lost its height once a row changed
+    <View
+      className="ml-24 bg-opaque-separator/70"
+      collapsable={false}
+      style={styles.itemSeparator}
+    />
+  )
+}
+const keyExtractor = (item: ActionModel) => item.index.toString()
+const ListItemCell: ListRenderItem<ActionModel> = (props) => {
+  return <ListItemCellImpl {...props} />
+}
+const ListItemCellImpl: ListRenderItem<ActionModel> = ({ item: rule }) => {
+  const { t } = useTranslation("common")
+  const navigation = useNavigation()
+  const colors = useColors()
+  return (
+    <SwipeableItem
+      swipeRightToCallAction
+      rightActions={[
+        {
+          label: t("words.delete"),
+          onPress: () => {
+            actionActions.deleteRule(rule.index)
+          },
+          backgroundColor: colors.red,
+        },
+        {
+          label: t("words.edit"),
+          onPress: () => {
+            navigation.pushControllerView(EditRuleScreen, {
+              index: rule.index,
+            })
+          },
+          backgroundColor: colors.blue,
+        },
+      ]}
+    >
+      <ItemPressable
+        className="flex flex-row justify-between p-4"
+        onPress={() =>
+          navigation.pushControllerView(EditRuleScreen, {
+            index: rule.index,
+          })
+        }
+      >
+        <Text className="text-base text-label">{rule.name}</Text>
+        <Switch
+          size="sm"
+          value={!rule.result.disabled}
+          onValueChange={() => {
+            actionActions.patchRule(rule.index, {
+              result: {
+                disabled: !rule.result.disabled,
+              },
+            })
+          }}
+        />
+      </ItemPressable>
+    </SwipeableItem>
+  )
+}
+
+const styles = StyleSheet.create({
+  itemSeparator: {
+    height: StyleSheet.hairlineWidth,
+  },
+})

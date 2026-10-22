@@ -1,0 +1,184 @@
+import { useFeedById } from "@follow/store/feed/hooks"
+import { useListById, usePrefetchLists } from "@follow/store/list/hooks"
+import { listSyncServices } from "@follow/store/list/store"
+import {
+  useFeedSubscriptionIdsByView,
+  usePrefetchSubscription,
+  useSortedFeedSubscriptionByAlphabet,
+} from "@follow/store/subscription/hooks"
+import { useMutation } from "@tanstack/react-query"
+import type { MutableRefObject } from "react"
+import { createContext, use, useEffect, useMemo, useRef, useState } from "react"
+import { useTranslation } from "react-i18next"
+import { PixelRatio, StyleSheet, View } from "react-native"
+
+import { HeaderSubmitTextButton } from "@/src/components/layouts/header/HeaderElements"
+import {
+  NavigationBlurEffectHeaderView,
+  SafeNavigationScrollView,
+} from "@/src/components/layouts/views/SafeNavigationScrollView"
+import {
+  GroupedInsetListBaseCell,
+  GroupedInsetListCard,
+  GroupedInsetListSectionHeader,
+} from "@/src/components/ui/grouped/GroupedList"
+import { FeedIcon } from "@/src/components/ui/icon/feed-icon"
+import { ItemPressable } from "@/src/components/ui/pressable/ItemPressable"
+import { Text } from "@/src/components/ui/typography/Text"
+import { CheckLineIcon } from "@/src/icons/check_line"
+import { toastFetchError } from "@/src/lib/error-parser"
+import { useNavigation } from "@/src/lib/navigation/hooks"
+import type { NavigationControllerView } from "@/src/lib/navigation/types"
+import { accentColor } from "@/src/theme/colors"
+
+const ManageListContext = createContext<{
+  nextSelectedFeedIdRef: MutableRefObject<Set<string>>
+}>(null!)
+export const ManageListScreen: NavigationControllerView<{
+  id: string
+}> = ({ id }) => {
+  usePrefetchLists()
+  const list = useListById(id)
+  const { t } = useTranslation("settings")
+  const nextSelectedFeedIdRef = useRef(new Set<string>())
+  const ctxValue = useMemo(
+    () => ({
+      nextSelectedFeedIdRef,
+    }),
+    [nextSelectedFeedIdRef],
+  )
+  const initOnceRef = useRef(false)
+  useEffect(() => {
+    // The list may still be loading; the selection starts from its feeds once it arrives
+    if (initOnceRef.current || !list) return
+    initOnceRef.current = true
+    nextSelectedFeedIdRef.current = new Set(list.feedIds)
+  }, [list])
+  const addFeedsToFeedListMutation = useMutation({
+    mutationFn: async () => {
+      const currentFeedIds = new Set(list?.feedIds ?? [])
+      const nextFeedIds = nextSelectedFeedIdRef.current
+      const addedFeedIds = Array.from(nextFeedIds).filter((feedId) => !currentFeedIds.has(feedId))
+      const removedFeedIds = Array.from(currentFeedIds).filter((feedId) => !nextFeedIds.has(feedId))
+
+      if (addedFeedIds.length > 0) {
+        await listSyncServices.addFeedsToFeedList({ listId: id, feedIds: addedFeedIds })
+      }
+      for (const feedId of removedFeedIds) {
+        await listSyncServices.removeFeedFromFeedList({ listId: id, feedId })
+      }
+    },
+  })
+  const navigation = useNavigation()
+  return (
+    <SafeNavigationScrollView
+      className="bg-system-grouped-background"
+      Header={
+        <NavigationBlurEffectHeaderView
+          title={`${t("lists.manage_list")} - ${list?.title}`}
+          headerRight={() => (
+            <HeaderSubmitTextButton
+              label={t("words.save", {
+                ns: "common",
+              })}
+              isLoading={addFeedsToFeedListMutation.isPending}
+              isValid
+              onPress={() => {
+                addFeedsToFeedListMutation
+                  .mutateAsync()
+                  .then(() => {
+                    navigation.back()
+                  })
+                  .catch((error) => {
+                    toastFetchError(error as Error)
+                    console.error(error)
+                  })
+              }}
+            />
+          )}
+        />
+      }
+    >
+      {!!list && (
+        <ManageListContext value={ctxValue}>
+          <ListImpl id={list.id} />
+        </ManageListContext>
+      )}
+    </SafeNavigationScrollView>
+  )
+}
+const ListImpl: React.FC<{
+  id: string
+}> = ({ id }) => {
+  const { t } = useTranslation("settings")
+  const list = useListById(id)!
+  usePrefetchSubscription(list.view)
+  const subscriptionIds = useFeedSubscriptionIdsByView(list.view)
+  const sortedSubscriptionIds = useSortedFeedSubscriptionByAlphabet(subscriptionIds)
+  return (
+    <>
+      <GroupedInsetListSectionHeader label={t("lists.select_feeds")} />
+      <GroupedInsetListCard SeparatorComponent={SeparatorComponent}>
+        {sortedSubscriptionIds.map((id) => (
+          <FeedCell key={id} feedId={id} isSelected={list.feedIds.includes(id)} />
+        ))}
+      </GroupedInsetListCard>
+    </>
+  )
+}
+const SeparatorComponent = () => {
+  return (
+    <View
+      className="ml-16 bg-opaque-separator/70"
+      style={{
+        height: StyleSheet.hairlineWidth,
+      }}
+      collapsable={false}
+    />
+  )
+}
+const FeedCell = (props: { feedId: string; isSelected: boolean }) => {
+  const { t } = useTranslation("settings")
+  const feed = useFeedById(props.feedId)
+  const { nextSelectedFeedIdRef } = use(ManageListContext)
+  const [currentSelected, setCurrentSelected] = useState(props.isSelected)
+  const iconMariginRight = 36 / PixelRatio.get()
+  if (!feed) return null
+  return (
+    <ItemPressable
+      accessibilityRole="checkbox"
+      accessibilityState={{ checked: currentSelected }}
+      onPress={() => {
+        const has = nextSelectedFeedIdRef.current.has(feed.id)
+        if (has) {
+          nextSelectedFeedIdRef.current.delete(feed.id)
+        } else {
+          nextSelectedFeedIdRef.current.add(feed.id)
+        }
+        setCurrentSelected(!has)
+      }}
+    >
+      <GroupedInsetListBaseCell>
+        <View className="flex-1 flex-row items-center gap-4">
+          <View
+            className="size-4 items-center justify-center"
+            style={{
+              marginRight: iconMariginRight,
+            }}
+          >
+            <View className="overflow-hidden rounded-lg">
+              <FeedIcon feed={feed} size={24} />
+            </View>
+          </View>
+          <Text className="flex-1 text-label" ellipsizeMode="middle" numberOfLines={1}>
+            {feed?.title || t("lists.feeds.untitled")}
+          </Text>
+        </View>
+
+        <View className="ml-2 flex size-4 shrink-0 items-center justify-center">
+          {currentSelected && <CheckLineIcon color={accentColor} height={18} width={18} />}
+        </View>
+      </GroupedInsetListBaseCell>
+    </ItemPressable>
+  )
+}

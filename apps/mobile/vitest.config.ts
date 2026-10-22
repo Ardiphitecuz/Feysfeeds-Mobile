@@ -1,0 +1,23 @@
+import { defineConfig } from "vitest/config"
+
+export default defineConfig({
+  root: import.meta.dirname,
+  define: {
+    ELECTRON: "false",
+  },
+  resolve: {
+    alias: {
+      "@": import.meta.dirname,
+    },
+  },
+  test: {
+    environment: "node",
+    include: [
+      "src/**/*.test.ts",
+      "src/**/*.test.tsx",
+      "src/**/*.spec.ts",
+      "scripts/**/*.test.ts",
+      "../../.github/scripts/**/*.test.ts",
+    ],
+  },
+})
