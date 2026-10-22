@@ -54,6 +54,9 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     ...config,
 
     extra: {
+      eas: {
+        projectId: "35a9cd40-e9bc-441a-ba49-d4b654bf10b6",
+      },
       e2eEnvProfile: process.env.EXPO_PUBLIC_E2E_ENV_PROFILE ?? null,
       e2eLanguage: process.env.EXPO_PUBLIC_E2E_LANGUAGE ?? null,
     },
